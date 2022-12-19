@@ -33,7 +33,8 @@ The default learning rate schedule starts at 0.1 and decays by a factor of 10 ev
 For example, the following command can be used to train ResNet-18 from scratch with a radius-250 L1Sphere projection layer (before the final fully-connected layer and after a batch normalization layer without learnable affine parameters):
 
 ```bash
-python3 main.py --arch resnet18 --gpu 0 --projection-type 'L1S' --radius 250.0 --log-dir [log directory] [imagenet-folder]
+python main.py --arch resnet18 --gpu 0 --projection-type 'L1S' --radius 250.0 --log-dir ./log F:/ILSVRC2012_img
+python main.py --arch resnet18 --gpu 0 --projection-type 'LpB' --radius 100.0 --log-dir ./log F:/ILSVRC2012_img
 ```
 
 Further details (from the PyTorch example) are available at [this permalink](https://github.com/pytorch/examples/tree/ee964a2eeb41e1712fe719b83645c79bcbd0ba1a/imagenet).

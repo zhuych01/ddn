@@ -75,9 +75,9 @@ def get_weightedl1_ball_projection(point_to_be_projected,
         x_sol_hyper, dual = get_hyperplane_projection(point_to_be_projected_copy_act, weights_act, radius)
         
         # Update the active index set
-        point_to_be_projected_copy_act = torch.maximum(x_sol_hyper, 0.0)
+        point_to_be_projected_copy_act = torch.maximum(x_sol_hyper, torch.zeros_like(x_sol_hyper))
 
-        point_to_be_projected_copy[act_ind] = point_to_be_projected_copy_act.copy()
+        point_to_be_projected_copy[act_ind] = point_to_be_projected_copy_act.clone()
         
         act_ind = point_to_be_projected_copy > 0
 
@@ -96,11 +96,11 @@ def get_lp_ball_projection(starting_point,
                     point_to_be_projected, 
                                         p,
                                    radius, 
-                                  epsilon,
+                                  epsilon=1e-4,
                                   Tau = 1.1,
                                   condition_right=100,
-                                  tol=1e-8,
-                                  MAX_ITER=1000,**kwargs):
+                                  tol=1e-4,
+                                  MAX_ITER=500,**kwargs):
     """Gets the lp ball projection of given point.
 
     Args:
@@ -119,7 +119,7 @@ def get_lp_ball_projection(starting_point,
     count : The number of iterations
 
     """
-    if LA.norm(point_to_be_projected, p) ** p <= radius:  
+    if torch.norm(point_to_be_projected, p) ** p <= radius:  
         return point_to_be_projected
     
     # Step 1 and 2 in IRBP.  
@@ -129,8 +129,8 @@ def get_lp_ball_projection(starting_point,
     yAbs = signum * point_to_be_projected  # yAbs lives in the positive orthant of R^n
     
     lamb = 0.0
-    residual_alpha0 = (1. / n) * LA.norm((yAbs - starting_point) * starting_point - p * lamb * starting_point ** p, 1)
-    residual_beta0 =  abs(LA.norm(starting_point, p) ** p - radius)
+    residual_alpha0 = (1. / n) * torch.norm((yAbs - starting_point) * starting_point - p * lamb * starting_point ** p, 1)
+    residual_beta0 =  abs(torch.norm(starting_point, p) ** p - radius)
     
     cnt = 0
     
@@ -138,8 +138,8 @@ def get_lp_ball_projection(starting_point,
     while True:
             
         cnt += 1
-        alpha_res = (1. / n) * LA.norm((yAbs - starting_point) * starting_point - p * lamb * starting_point ** p, 1)
-        beta_res = abs(LA.norm(starting_point, p) ** p - radius)
+        alpha_res = (1. / n) * torch.norm((yAbs - starting_point) * starting_point - p * lamb * starting_point ** p, 1)
+        beta_res = abs(torch.norm(starting_point, p) ** p - radius)
         
         if max(alpha_res, beta_res) < tol * max(max(residual_alpha0, residual_beta0),\
                                                               1.0) or cnt > MAX_ITER:
@@ -151,7 +151,7 @@ def get_lp_ball_projection(starting_point,
         weights = p * 1. / ((torch.abs(starting_point) + epsilon) ** (1 - p) + 1e-12)
         
         # Step 4 in IRBP. Solve the subproblem for x^{k+1}
-        gamma_k = radius - LA.norm(abs(starting_point) + epsilon, p) ** p + torch.inner(weights, torch.abs(starting_point))
+        gamma_k = radius - torch.norm(abs(starting_point) + epsilon, p) ** p + torch.inner(weights, torch.abs(starting_point))
             
         assert gamma_k > 0, "The current Gamma is non-positive"
          
@@ -160,14 +160,14 @@ def get_lp_ball_projection(starting_point,
         x_new[torch.isnan(x_new)] = torch.zeros_like(x_new[torch.isnan(x_new)])
             
         # Step 5 in IRBP. Set the new relaxation vector epsilon according to the proposed condition
-        condition_left = LA.norm(x_new - starting_point, 2) * LA.norm(torch.sign(x_new - starting_point) * weights, 2) ** Tau
+        condition_left = torch.norm(x_new - starting_point, 2) * torch.norm(torch.sign(x_new - starting_point) * weights, 2) ** Tau
             
         if condition_left <= condition_right:
-            theta = torch.minimum(beta_res, 1. / torch.sqrt(cnt)) ** (1. / p)
+            theta = min(beta_res, 1. / np.sqrt(cnt)) ** (1. / p)
             epsilon = theta * epsilon
             
         # Step 6 in IRBP. Set k <--- (k+1)
-        starting_point = x_new.copy()
+        starting_point = x_new.clone()
     return  x_final
 
 
@@ -589,11 +589,17 @@ class LpBall():
         assert z > 0.0, "z must be strictly positive (%f <= 0)" % z
         assert p > 0.0 and p < 1.0, "p should between 0.0 and 1.0"
         # Replace v = 0 with unit vector:
-        w, _ = get_lp_ball_projection(torch.zeros_like(v),v,p,z)
-        # 2. Select v if already inside ball, otherwise select w
-        is_outside = v.norm(p=p, dim=-1, keepdim=True)**p<=z
-        w = torch.where(is_outside, w, v)
-        return w, is_outside
+        # v_size = v.size()
+        B, C = v.size()
+        output = torch.zeros_like(v)
+        for i in range(B):
+            # print(B)
+            w = get_lp_ball_projection(torch.zeros_like(v[i,:]),v[i,:],p,z)
+            # 2. Select v if already inside ball, otherwise select w
+            is_outside = v[i,:].norm(p=p, dim=-1, keepdim=True)**p<=z
+            w = torch.where(is_outside, w, v[i,:])
+            output[i,:] = w
+        return output, is_outside
 
     @staticmethod
     def gradient(grad_output, output, input, is_outside = None,p=0.8):
@@ -604,20 +610,29 @@ class LpBall():
         output = output.flatten(end_dim=-2)
         input = input.flatten(end_dim=-2)
         grad_output = grad_output.flatten(end_dim=-2)
+        #print(grad_output.shape,"???")
+        grad_input = torch.zeros_like(output)
         # 2. Use implicit differentiation to compute derivative
-        y = output
-        x = input
-        a_lp = p*torch.sign(y)*(abs(y)+1e-15)**(p-1)
-        B_lp = -torch.eye(len(x))
-        H_lp = torch.eye(len(x)) - torch.diag(torch.sign(y)*(y-x)*(p-1)*(torch.abs(y)+1e-15)**-1)
-        H_inv = torch.linalg.inv(H_lp)
-        # a_lp = torch.mat(a_lp).T
-        # B_lp = torch.mat(B_lp)
-        # H_lp = torch.mat(H_lp)
-        dyx_lp = ((H_inv @ a_lp @ a_lp.T @ H_inv)/(a_lp.T @ H_inv @ a_lp)-H_inv) @ B_lp
-        grad_input = grad_output*dyx_lp
+        for i in range(output.shape[0]):
+            y = output[i,:]#.unsqueeze(1)
+            x = input[i,:]#.unsqueeze(1)
+            
+            a_lp = p*torch.sign(y)*(abs(y)+1e-15)**(p-1)
+            a_lp = a_lp.unsqueeze(1)
+            B_lp = -torch.eye(len(x))
+            #H_lp = torch.eye(len(x)) - 
+            H_inv = torch.diag_embed((1-torch.sign(y)*(y-x)*(p-1)*(torch.abs(y)+1e-15)**-1)**-1) #torch.linalg.inv(H_lp)
+            a_lp = a_lp.to(x.device)
+            B_lp = B_lp.to(x.device)
+            H_inv = H_inv.to(x.device)
+            # a_lp = torch.mat(a_lp).T
+            # B_lp = torch.mat(B_lp)
+            # H_lp = torch.mat(H_lp)
+            # print(a_lp.shape,B_lp.shape,H_inv.shape)
+            dyx_lp = ((H_inv @ a_lp @ a_lp.T @ H_inv)/(a_lp.T @ H_inv @ a_lp)-H_inv) @ B_lp
+            grad_input[i,:] = dyx_lp@grad_output[i,:]
         # 3. Unflatten:
-        grad_input = torch.where(is_outside, grad_input, grad_output)
+        # grad_input = torch.where(is_outside, grad_input, grad_output)
         grad_input = grad_input.reshape(output_size)
         return grad_input
 
